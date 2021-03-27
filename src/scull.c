@@ -5,7 +5,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-
+#include <wait.h>
+#include <pthread.h>
 #include "scull.h"
 
 #define CDEV_NAME "/dev/scull"
@@ -47,6 +48,8 @@ static cmd_t parse_arguments(int argc, const char **argv)
 	case 'T':
 	case 'H':
 	case 'X':
+	case 'p':
+	case 't':
 		if (argc < 3) {
 			fprintf(stderr, "%s: Missing quantum\n", argv[0]);
 			cmd = -1;
@@ -71,11 +74,20 @@ ret:
 	}
 	return cmd;
 }
-
+static void* helper(void* ptr){
+	struct task_info info;
+	ioctl(*(int*)ptr, SCULL_IOCKQUANTUM, &info);
+	printf("state %ld, stack %lx, cpu %u, prio %d, sprio %d, nprio %d, rtprio %u, pid %d, tgid %d, nv %lu, niv %lu\n", info.state, (unsigned long) info.stack, info.cpu, info.prio, info.static_prio, info.normal_prio, info.rt_priority, info.pid, info.tgid, info.nvcsw, info.nivcsw);
+	pthread_exit(NULL);
+	
+}
 static int do_op(int fd, cmd_t cmd)
 {
 	int ret, q;
-
+	struct task_info info;
+	pthread_t yeah[10];
+	int num = 0;
+	int split;
 	switch (cmd) {
 	case 'R':
 		ret = ioctl(fd, SCULL_IOCRESET);
@@ -112,6 +124,45 @@ static int do_op(int fd, cmd_t cmd)
 	case 'H':
 		q = ioctl(fd, SCULL_IOCHQUANTUM, g_quantum);
 		printf("Quantum shifted, old quantum: %d\n", q);
+		ret = 0;
+		break;
+	case 'p':
+		if (g_quantum <11){
+			if (g_quantum >0){
+				num = 0;
+				while (num<g_quantum){
+					split = fork();
+					if (split && split ==0){
+						ret = ioctl(fd, SCULL_IOCKQUANTUM, &info);
+						printf("state %ld, stack %lx, cpu %u, prio %d, sprio %d, nprio %d, rtprio %u, pid %d, tgid %d, nv %lu, niv %lu\n", info.state, (unsigned long) info.stack, info.cpu, info.prio, info.static_prio, info.normal_prio, info.rt_priority, info.pid, info.tgid, info.nvcsw, info.nivcsw);
+						exit(0);
+					}
+					num++;
+				}
+				num=0;
+				while (num<g_quantum){
+					wait(NULL);
+					num++;
+			}
+		}
+	}
+	ret = 0;
+	break;
+	case 't':
+		if (g_quantum <11){
+			if (g_quantum >0){
+				num=0;
+				while(num<g_quantum){
+					pthread_create(&yeah[num], NULL, helper, &fd);
+					num++;
+				}
+				num = 0;
+				while(num<g_quantum){
+					pthread_join(yeah[num], NULL);
+					num++;
+				}
+			}
+		}
 		ret = 0;
 		break;
 	default:

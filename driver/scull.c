@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
+ 
 
 #include <linux/kernel.h>	/* printk() */
 #include <linux/slab.h>		/* kmalloc() */
@@ -24,16 +25,21 @@
 #include <linux/errno.h>	/* error codes */
 #include <linux/types.h>	/* size_t */
 #include <linux/cdev.h>
+#include <linux/mutex.h>
 
 #include <linux/uaccess.h>	/* copy_*_user */
 
 #include "scull.h"		/* local definitions */
 #include "access_ok_version.h"
 
-/*
- * Our parameters which can be set at load time.
+
+/* sdsd
+ *
+ *
  */
 
+struct node{pid_t pid; pid_t tgid; struct node *next;};
+struct node *headptr = NULL;
 static int scull_major =   SCULL_MAJOR;
 static int scull_minor =   0;
 static int scull_quantum = SCULL_QUANTUM;
@@ -45,12 +51,50 @@ module_param(scull_quantum, int, S_IRUGO);
 MODULE_AUTHOR("Wonderful student of CS-492");
 MODULE_LICENSE("Dual BSD/GPL");
 
+static DEFINE_MUTEX(yeahyeah);
+
 static struct cdev scull_cdev;		/* Char device structure		*/
 
 
 /*
  * Open and close
  */
+static bool findnode(pid_t tgid, pid_t pid){
+	struct node *head = headptr;
+	while (head!=NULL){
+		if (tgid == head->tgid){
+			if (pid==head->pid){
+				return true;
+			}
+		}
+		head = head -> next;
+	}
+	return false;
+}
+static bool addNode(pid_t pid, pid_t tgid){
+	struct node *holder;
+	if (findnode(tgid,pid)==true){//do not insert if found
+		return false;
+	}
+	if (headptr== NULL){//insert node into linked list if head is empty
+		headptr = kmalloc(sizeof(struct node), GFP_KERNEL);
+		headptr->tgid = tgid;
+		headptr -> pid = pid;
+		headptr->next = NULL;
+		return true;
+	}
+	holder = headptr;
+	while (holder-> next !=NULL){//goes to the tail of the linkedlist
+		holder = holder -> next;
+	}
+	struct node *tail = kmalloc(sizeof(struct node), GFP_KERNEL);
+	holder -> next = tail;
+	tail -> pid = pid;
+	tail -> tgid = tgid;
+	tail -> next = NULL;
+	return true;
+
+}
 
 static int scull_open(struct inode *inode, struct file *filp)
 {
@@ -72,6 +116,7 @@ static long scull_ioctl(struct file *filp, unsigned int cmd,
 		unsigned long arg)
 {
 
+	struct task_info info;
 	int err = 0, tmp;
 	int retval = 0;
     
@@ -128,7 +173,22 @@ static long scull_ioctl(struct file *filp, unsigned int cmd,
 		tmp = scull_quantum;
 		scull_quantum = arg;
 		return tmp;
-
+	case SCULL_IOCKQUANTUM:
+		info.state = current -> state;
+		info.stack = current -> stack;
+		info.cpu = current -> cpu;
+		info.prio = current -> prio;
+		info.static_prio = current -> static_prio;
+		info.normal_prio = current -> normal_prio;
+		info.rt_priority = current -> rt_priority;
+		info.pid = current -> pid;
+		info.tgid = current -> tgid;
+		info.nvcsw =current -> nvcsw;
+		info.nivcsw =current -> nivcsw;
+		mutex_lock(&yeahyeah);
+		addNode(info.pid,info.tgid);
+		mutex_unlock(&yeahyeah);
+		return copy_to_user((struct task_info *)arg,&info,sizeof(struct task_info));
 	  default:  /* redundant, as cmd was checked against MAXNR */
 		return -ENOTTY;
 	}
@@ -155,18 +215,42 @@ struct file_operations scull_fops = {
  */
 void scull_cleanup_module(void)
 {
-	dev_t devno = MKDEV(scull_major, scull_minor);
 
+	struct node *currentnode = NULL;
+	struct node *nextnode = NULL;
+	struct node *tempnode = NULL;
+	int num = 1;
+	dev_t devno = MKDEV(scull_major, scull_minor);
+	
 	/* Get rid of the char dev entry */
 	cdev_del(&scull_cdev);
+	
+	printk(KERN_ALERT "Linked List to be deleted:\n");
 
+	tempnode = headptr;
+	while (tempnode!=NULL){
+		if(tempnode -> next == NULL){
+			printk(KERN_ALERT "TASK %d: PID: %d; TGID: %d\n", num, tempnode->pid, tempnode -> tgid);
+		}
+		else{
+			printk(KERN_INFO "TASK %d: PID: %d -> \n", num, tempnode->pid, tempnode->tgid);
+		}
+		tempnode = tempnode ->next;
+		num++;
+	}
+	nextnode = headptr;
+	while (nextnode != NULL){
+		currentnode = nextnode;
+		nextnode = nextnode ->next;
+		kfree(currentnode);
+	}
 	/* cleanup_module is never called if registering failed */
 	unregister_chrdev_region(devno, 1);
 }
 
 
 int scull_init_module(void)
-{
+{	
 	int result;
 	dev_t dev = 0;
 
